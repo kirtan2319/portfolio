@@ -1,13 +1,325 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+
+// ============================================================
+// USER & AUTHENTICATION
+// ============================================================
+
+model User {
+  id String @id @default(uuid())
+
+  // Identity
+  username String @unique
+  email    String @unique
+  phone    String? @unique
+
+  // Local authentication
+  // NULL when the user only uses Google/OAuth.
+  passwordHash String?
+
+  // Profile
+  firstName String?
+  lastName  String?
+
+  // Verification
+  emailVerifiedAt DateTime?
+  phoneVerifiedAt DateTime?
+
+  // Account status
+  isActive Boolean @default(true)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  accounts         AuthAccount[]
+  sessions         Session[]
+  providerAccounts ProviderAccount[]
+  conversations    Conversation[]
+  requests         Request[]
+}
+
+
+// ============================================================
+// EXTERNAL AUTHENTICATION
+// ============================================================
+
+model AuthAccount {
+  id String @id @default(uuid())
+
+  userId String
+
+  // Examples:
+  // google
+  // github
+  // microsoft
+  provider          String
+  providerAccountId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Same external account cannot belong to multiple users
+  @@unique([provider, providerAccountId])
+
+  @@index([userId])
+}
+
+
+// ============================================================
+// SESSIONS
+// ============================================================
+
+model Session {
+  id String @id @default(uuid())
+
+  userId String
+
+  // Hash of the session token
+  sessionToken String @unique
+
+  // Device/session information
+  ipAddress String?
+  userAgent String?
+
+  // Session expiration
+  expiresAt DateTime
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+
+// ============================================================
+// AI PROVIDERS
+// ============================================================
+
+model Provider {
+  id          String @id @default(uuid())
+  name        String @unique
+  displayName String
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  models           Model[]
+  providerAccounts ProviderAccount[]
+}
+
+
+// ============================================================
+// USER PROVIDER ACCOUNTS
+// ============================================================
+
+model ProviderAccount {
+  id String @id @default(uuid())
+
+  userId     String
+  providerId String
+
+  // Encrypted API credentials
+  // Never store raw API keys
+  encryptedCredentials String
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  // A user can have only one account/credential
+  // for a particular provider
+  @@unique([userId, providerId])
+
+  @@index([userId])
+  @@index([providerId])
+}
+
+
+// ============================================================
+// MODEL REGISTRY
+// ============================================================
+
+model Model {
+  id String @id @default(uuid())
+
+  providerId String
+
+  name        String
+  displayName String
+
+  // Context
+  contextWindow Int
+
+  // Capabilities
+  supportsVision            Boolean @default(false)
+  supportsToolCalling       Boolean @default(false)
+  supportsStructuredOutput Boolean @default(false)
+  supportsReasoning         Boolean @default(false)
+
+  // Pricing per million tokens
+  inputCostPerMillionTokens  Decimal @db.Decimal(20, 10)
+  outputCostPerMillionTokens Decimal @db.Decimal(20, 10)
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  messages Message[]
+  requests Request[]
+
+  @@unique([providerId, name])
+
+  @@index([providerId])
+}
+
+
+// ============================================================
+// CONVERSATIONS
+// ============================================================
+
+model Conversation {
+  id String @id @default(uuid())
+
+  userId String
+
+  title String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  messages Message[]
+  requests Request[]
+
+  @@index([userId])
+}
+
+
+// ============================================================
+// MESSAGES
+// ============================================================
+
+model Message {
+  id String @id @default(uuid())
+
+  conversationId String
+
+  // user / assistant / system / tool
+  role MessageRole
+
+  content String
+
+  // NULL for user/system messages
+  // Set when an AI model generated the message
+  modelId String?
+
+  // Token usage
+  inputTokens  Int?
+  outputTokens Int?
+  totalTokens  Int?
+
+  createdAt DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  model Model? @relation(fields: [modelId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, createdAt])
+  @@index([modelId])
+}
+
+
+// ============================================================
+// REQUESTS / ROUTING / USAGE
+// ============================================================
+
+model Request {
+  id String @id @default(uuid())
+
+  userId         String
+  conversationId String
+  modelId        String
+
+  // Prompt optimization
+  originalPrompt  String
+  optimizedPrompt String?
+
+  // Context optimization
+  contextTokensBefore  Int?
+  contextTokensAfter   Int?
+  contextWasCompressed Boolean @default(false)
+
+  // Token usage
+  inputTokens  Int?
+  outputTokens Int?
+  totalTokens  Int?
+
+  // Performance
+  latencyMs Int?
+
+  // Cost
+  cost Decimal? @db.Decimal(20, 10)
+
+  // Request status
+  status RequestStatus
+
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  model Model @relation(fields: [modelId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([modelId, createdAt])
+}
+
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum MessageRole {
+  user
+  assistant
+  system
+  tool
+}
+
+enum RequestStatus {
+  pending
+  processing
+  completed
+  failed
 }
